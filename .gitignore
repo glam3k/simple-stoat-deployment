@@ -1,0 +1,9 @@
+# Secrets — never commit filled env files
+*.env
+Revolt.toml
+
+# Runtime data
+data/
+
+# OS
+.DS_Store

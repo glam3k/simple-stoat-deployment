@@ -1,0 +1,868 @@
+#!/usr/bin/env python3
+"""Stoat deployment helper CLI."""
+from __future__ import annotations
+
+import argparse
+import getpass
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, Iterable, Optional
+
+NETWORK_NAME = "stoat"
+
+
+def run(cmd: Iterable[str], *, cwd: Path | None = None, env: Dict[str, str] | None = None) -> None:
+    cmd_list = [str(c) for c in cmd]
+    print(f"+ {' '.join(shlex.quote(c) for c in cmd_list)}")
+    subprocess.run(cmd_list, cwd=str(cwd) if cwd else None, env=env, check=True)
+
+
+def compose_cmd(*args: str, capture_output: bool = False) -> subprocess.CompletedProcess[str]:
+    if CTX is None:
+        raise RuntimeError("Context not initialised")
+    cmd = ["docker", "compose"]
+    for path in CTX.docker_compose_files():
+        cmd.extend(["-f", path])
+    cmd.extend(args)
+    return subprocess.run(
+        cmd,
+        cwd=str(CTX.upstream_dir),
+        capture_output=capture_output,
+        text=True,
+        check=True,
+    )
+
+
+def load_env_file(path: Path) -> Dict[str, str]:
+    data: Dict[str, str] = {}
+    if not path.exists():
+        raise SystemExit(f"ERROR: {path} does not exist. Copy .env.example first")
+    for raw_line in path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        data[key.strip()] = value.strip()
+    return data
+
+
+def derive_hostname(env: Dict[str, str], override_key: str, subdomain_key: str, default: str) -> str:
+    base = env.get("BASE_DOMAIN", "").strip()
+    if not base:
+        raise SystemExit("ERROR: BASE_DOMAIN must be set in .env")
+    override = env.get(override_key, "").strip()
+    if override:
+        return override
+    sub = env.get(subdomain_key, default).strip()
+    if not sub:
+        return base
+    return f"{sub}.{base}"
+
+
+def derive_admin_email(env: Dict[str, str], base_domain: str) -> str:
+    return env.get("BOOTSTRAP_ADMIN_EMAIL", f"admin@{base_domain}").strip()
+
+
+class StoatContext:
+    def __init__(self) -> None:
+        self.infra_root = Path(__file__).resolve().parents[1]
+        self.env_file = self.infra_root / ".env"
+        self.env = load_env_file(self.env_file)
+        self.base_domain = self.env.get("BASE_DOMAIN", "").strip()
+        if not self.base_domain:
+            raise SystemExit("ERROR: BASE_DOMAIN must be set in .env")
+        self.stoat_dir = Path(os.environ.get("STOAT_DIR", "/opt/stoat"))
+        self.user = getpass.getuser()
+        self.stoat_host = derive_hostname(self.env, "STOAT_FQDN", "STOAT_SUBDOMAIN", "chat")
+        self.auth_host = derive_hostname(self.env, "AUTH_FQDN", "AUTH_SUBDOMAIN", "sso")
+        self.admin_host = derive_hostname(self.env, "ADMIN_FQDN", "ADMIN_SUBDOMAIN", "admin")
+        self.admin_email = derive_admin_email(self.env, self.base_domain)
+
+        self.upstream_dir = self.stoat_dir / "upstream"
+        self.override_compose = self.stoat_dir / "overrides/docker-compose.override.yml"
+
+    def docker_compose_files(self) -> list[str]:
+        files = [str(self.upstream_dir / "compose.yml")]
+        if self.override_compose.exists():
+            files.append(str(self.override_compose))
+        return files
+
+
+CTX: StoatContext | None = None
+
+
+def stoat_env() -> Dict[str, str]:
+    if CTX is None:
+        raise RuntimeError("Context not initialised")
+    env = os.environ.copy()
+    env["STOAT_DIR"] = str(CTX.stoat_dir)
+    return env
+
+
+def ensure_stoat_dir() -> None:
+    if CTX is None:
+        raise RuntimeError("Context not initialised")
+    if CTX.stoat_dir.exists():
+        return
+    parent = CTX.stoat_dir.parent
+    if parent.exists() and os.access(parent, os.W_OK):
+        CTX.stoat_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        run(["sudo", "mkdir", "-p", str(CTX.stoat_dir)])
+        run(["sudo", "chown", f"{CTX.user}:{CTX.user}", str(CTX.stoat_dir)])
+
+
+def ensure_network() -> None:
+    inspect = subprocess.run([
+        "docker", "network", "inspect", NETWORK_NAME
+    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if inspect.returncode != 0:
+        run(["docker", "network", "create", NETWORK_NAME])
+
+
+def copy_repo() -> None:
+    if CTX.infra_root.resolve() == CTX.stoat_dir.resolve():
+        return
+    run([
+        "rsync", "-a", "--exclude=.git", f"{CTX.infra_root}/", f"{CTX.stoat_dir}/"
+    ])
+
+
+def init_upstream() -> None:
+    stoat_git = CTX.stoat_dir / ".git"
+    if stoat_git.exists():
+        run(["git", "-C", str(CTX.stoat_dir), "submodule", "init"])
+        run(["git", "-C", str(CTX.stoat_dir), "submodule", "update"])
+    elif not (CTX.upstream_dir / "compose.yml").exists():
+        run(["git", "clone", "https://github.com/revoltchat/self-hosted", str(CTX.upstream_dir)])
+
+
+def generate_config() -> None:
+    revolt_path = CTX.upstream_dir / "Revolt.toml"
+    if revolt_path.exists():
+        print("Revolt.toml already exists; skipping generation.")
+        return
+    script = CTX.upstream_dir / "generate_config.sh"
+    if script.exists():
+        script.chmod(script.stat().st_mode | 0o111)
+    run(["./generate_config.sh", CTX.stoat_host], cwd=CTX.upstream_dir)
+
+
+def rebuild_caddy() -> None:
+    run([str(CTX.infra_root / "bin/render_caddy_base.sh")], env=stoat_env())
+    run([str(CTX.infra_root / "bin/rebuild_caddy.sh")], env=stoat_env())
+
+
+def ensure_core_compose_ready(strict: bool = True) -> bool:
+    if CTX is None:
+        raise RuntimeError("Context not initialised")
+    compose = CTX.upstream_dir / "compose.yml"
+    if not compose.exists():
+        if strict:
+            raise SystemExit(f"ERROR: {compose} not found. Run bin/stoatctl deploy core first.")
+        return False
+    if not CTX.override_compose.exists():
+        if strict:
+            raise SystemExit(
+                f"ERROR: Override file missing at {CTX.override_compose}. Pull the infra repo to refresh overrides."
+            )
+        return False
+    return True
+
+
+def docker_compose_up() -> None:
+    ensure_core_compose_ready()
+    compose_cmd("up", "-d")
+
+
+def docker_compose_down(remove_volumes: bool = False) -> None:
+    if not ensure_core_compose_ready(strict=False):
+        print("No core stack found; nothing to stop.")
+        return
+    args = ["down"]
+    if remove_volumes:
+        args.append("-v")
+    compose_cmd(*args)
+
+
+def ensure_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def write_caddy_fragment(name: str, hostname: str, target: str) -> None:
+    caddy_dir = CTX.stoat_dir / "overrides" / "Caddyfile.d"
+    ensure_dir(caddy_dir)
+    fragment = caddy_dir / f"{name}.caddy"
+    fragment.write_text(f"{hostname} {{\n    reverse_proxy {target}\n}}\n")
+    rebuild_caddy()
+
+
+def rsync_tree(src: Path, dst: Path, excludes: list[str]) -> None:
+    args = ["rsync", "-a", "--delete"]
+    for pattern in excludes:
+        args.append(f"--exclude={pattern}")
+    args.extend([f"{src}/", f"{dst}/"])
+    run(args)
+
+
+def ports_in_use(ports: Iterable[int]) -> bool:
+    try:
+        result = subprocess.run(["ss", "-tln"], capture_output=True, text=True, check=True)
+        output = result.stdout
+    except Exception:
+        return False
+    for port in ports:
+        if f":{port} " in output or f":{port}\n" in output:
+            return True
+    return False
+
+
+def update_env_file(path: Path, updates: Dict[str, str]) -> None:
+    if path.exists():
+        lines = path.read_text().splitlines()
+    else:
+        lines = []
+    seen = {key: False for key in updates}
+    for idx, line in enumerate(lines):
+        if not line or line.strip().startswith("#") or "=" not in line:
+            continue
+        key = line.split("=", 1)[0]
+        if key in updates:
+            lines[idx] = f"{key}={updates[key]}"
+            seen[key] = True
+    for key, value in updates.items():
+        if not seen[key]:
+            lines.append(f"{key}={value}")
+    path.write_text("\n".join(lines) + "\n")
+
+
+def generate_build_env(env_local: Path, dest: Path) -> None:
+    lines = ["# Auto-generated from .env.local — contains only NEXT_PUBLIC* values"]
+    for raw in env_local.read_text().splitlines():
+        entry = raw.strip()
+        if entry.startswith("NEXT_PUBLIC_"):
+            lines.append(entry)
+    dest.write_text("\n".join(lines) + "\n")
+
+
+def run_healthcheck() -> None:
+    env = stoat_env()
+    run([str(CTX.infra_root / "bin/healthcheck.sh"), "--domain", CTX.stoat_host], env=env)
+
+
+def run_bootstrap() -> None:
+    env = stoat_env()
+    env["BOOTSTRAP_ADMIN_EMAIL"] = CTX.admin_email
+    run([str(CTX.infra_root / "bin/bootstrap.sh"), "--domain", CTX.stoat_host], env=env)
+
+
+def deploy_core() -> None:
+    print(f"Stoat host: {CTX.stoat_host}")
+    ensure_stoat_dir()
+    ensure_network()
+    copy_repo()
+    init_upstream()
+    generate_config()
+    rebuild_caddy()
+    docker_compose_up()
+    print("Waiting for services to settle...")
+    time.sleep(10)
+    run_healthcheck()
+    run_bootstrap()
+
+
+def stop_core() -> None:
+    docker_compose_down(remove_volumes=False)
+
+
+def destroy_core(skip_confirm: bool = False) -> None:
+    if not skip_confirm:
+        confirm = input("Type 'DESTROY' to remove core Stoat stack: ")
+        if confirm != "DESTROY":
+            print("Aborted.")
+            return
+    docker_compose_down(remove_volumes=True)
+    # Stop addon stacks
+    addons_dir = CTX.stoat_dir / "addons"
+    if addons_dir.exists():
+        for addon in addons_dir.iterdir():
+            compose = addon / "docker-compose.yml"
+            if compose.exists():
+                run(["docker", "compose", "down", "-v"], cwd=addon)
+    if CTX.stoat_dir.exists():
+        print(f"Removing {CTX.stoat_dir}...")
+        try:
+            shutil.rmtree(CTX.stoat_dir)
+        except PermissionError:
+            run(["sudo", "rm", "-rf", str(CTX.stoat_dir)])
+    print("Stoat fully destroyed.")
+
+
+def deploy_caddy() -> None:
+    ensure_stoat_dir()
+    ensure_network()
+    copy_repo()
+    init_upstream()
+    generate_config()
+    rebuild_caddy()
+    compose_cmd("up", "-d", "caddy")
+
+
+def stop_caddy() -> None:
+    if not ensure_core_compose_ready(strict=False):
+        return
+    compose_cmd("stop", "caddy")
+
+
+def destroy_caddy() -> None:
+    if not ensure_core_compose_ready(strict=False):
+        return
+    compose_cmd("rm", "-sf", "caddy")
+
+
+def addon_paths(name: str) -> tuple[Path, Path]:
+    src = CTX.infra_root / "addons" / name
+    dst = CTX.stoat_dir / "addons" / name
+    return src, dst
+
+
+def deploy_authentik() -> None:
+    src, dst = addon_paths("authentik")
+    if not src.exists():
+        raise SystemExit(f"ERROR: {src} not found")
+    ensure_dir(dst)
+    rsync_tree(src, dst, [".env", "data/", "certs/", "custom-templates/"])
+
+    env_file = dst / ".env"
+    if not env_file.exists():
+        shutil.copy(src / ".env.example", env_file)
+        print(f"Created {env_file}. Fill it out with secure values and rerun.")
+        return
+
+    for subdir in ("data", "certs", "custom-templates"):
+        ensure_dir(dst / subdir)
+
+    ensure_network()
+    run(["docker", "compose", "up", "-d"], cwd=dst)
+    write_caddy_fragment("authentik", CTX.auth_host, "authentik-server:9000")
+
+
+def stop_authentik() -> None:
+    _, dst = addon_paths("authentik")
+    compose = dst / "docker-compose.yml"
+    if not compose.exists():
+        print("Authentik compose.yml not found; nothing to stop.")
+        return
+    run(["docker", "compose", "down"], cwd=dst)
+
+
+def destroy_authentik() -> None:
+    _, dst = addon_paths("authentik")
+    if not dst.exists():
+        print("Authentik directory missing; nothing to destroy.")
+        return
+    run(["docker", "compose", "down", "-v"], cwd=dst)
+    shutil.rmtree(dst)
+    print("Authentik add-on removed.")
+
+
+def sync_admin_env(env_path: Path) -> None:
+    updates = {
+        "NEXTAUTH_URL": f"https://{CTX.admin_host}",
+        "AUTHENTIK_ISSUER": f"https://{CTX.auth_host}/application/o/stoat-admin/",
+        "NEXT_PUBLIC_APP_URL": f"https://{CTX.stoat_host}",
+        "NEXT_PUBLIC_API_URL": f"https://{CTX.stoat_host}/api",
+        "NEXT_PUBLIC_CDN_URL": f"https://{CTX.stoat_host}/autumn",
+    }
+    update_env_file(env_path, updates)
+
+
+
+def ensure_admin_panel_sources(addon_root: Path) -> None:
+    if CTX is None:
+        raise RuntimeError("Context not initialised")
+    checkout = addon_root / "src"
+    if checkout.exists() and any(checkout.iterdir()):
+        return
+
+    repo_root = CTX.infra_root
+    git_dir = repo_root / ".git"
+    if not git_dir.exists():
+        raise SystemExit(
+            "ERROR: Admin panel sources are missing and this checkout does not contain Git metadata. "
+            "Clone the infra repository with `git clone --recursive` and retry."
+        )
+
+    rel_path = addon_root.relative_to(repo_root)
+    submodule_path = rel_path / "src"
+    print("Admin panel sources missing; initialising git submodule...")
+    try:
+        run(["git", "submodule", "update", "--init", "--recursive", str(submodule_path)], cwd=repo_root)
+    except subprocess.CalledProcessError as exc:  # pragma: no cover
+        raise SystemExit(
+            "ERROR: Failed to fetch the admin panel submodule. "
+            "Run `git submodule update --init --recursive addons/admin-panel/src` and retry."
+        ) from exc
+
+    if not (checkout.exists() and any(checkout.iterdir())):
+        raise SystemExit(
+            "ERROR: Admin panel sources are still missing after submodule initialisation. Check your Git setup."
+        )
+
+
+
+def deploy_admin_panel() -> None:
+    src, dst = addon_paths("admin-panel")
+    ensure_admin_panel_sources(src)
+    ensure_dir(dst)
+    rsync_tree(src, dst, [".env.local", ".env.build"])
+
+    env_local = dst / ".env.local"
+    if not env_local.exists():
+        shutil.copy(src / ".env.local.example", env_local)
+        sync_admin_env(env_local)
+        print(f"Created {env_local}. Fill in Mongo/Redis/Auth values and rerun.")
+        return
+
+    sync_admin_env(env_local)
+    generate_build_env(env_local, dst / ".env.build")
+
+    ensure_network()
+    run(["docker", "compose", "-f", "docker-compose.yml", "build"], cwd=dst)
+    run(["docker", "compose", "-f", "docker-compose.yml", "up", "-d"], cwd=dst)
+    write_caddy_fragment("admin-panel", CTX.admin_host, "admin-panel:3000")
+
+
+def stop_admin_panel() -> None:
+    _, dst = addon_paths("admin-panel")
+    compose = dst / "docker-compose.yml"
+    if not compose.exists():
+        print("Admin panel compose.yml not found; nothing to stop.")
+        return
+    run(["docker", "compose", "-f", "docker-compose.yml", "down"], cwd=dst)
+
+
+def destroy_admin_panel() -> None:
+    _, dst = addon_paths("admin-panel")
+    if not dst.exists():
+        print("Admin panel directory missing; nothing to destroy.")
+        return
+    run(["docker", "compose", "-f", "docker-compose.yml", "down", "-v"], cwd=dst)
+    shutil.rmtree(dst)
+    print("Admin panel add-on removed.")
+
+
+def maintenance_paths() -> tuple[Path, Path]:
+    src = CTX.infra_root / "addons" / "maintenance"
+    dst = CTX.stoat_dir / "addons" / "maintenance"
+    return src, dst
+
+
+def deploy_maintenance(domain: Optional[str]) -> None:
+    domain = (domain or os.environ.get("MAINTENANCE_DOMAIN", "") or CTX.base_domain).strip()
+    if not domain:
+        raise SystemExit("ERROR: Maintenance domain required. Pass --domain or set MAINTENANCE_DOMAIN.")
+    if ports_in_use((80, 443)):
+        raise SystemExit("ERROR: Ports 80/443 are in use. Stop Stoat first (bin/stoatctl stop core).")
+    src, dst = maintenance_paths()
+    if not src.exists():
+        raise SystemExit(f"ERROR: {src} not found.")
+    ensure_dir(dst)
+    rsync_tree(src, dst, [])
+    env = os.environ.copy()
+    env["MAINTENANCE_DOMAIN"] = domain
+    run(["docker", "compose", "up", "-d"], cwd=dst, env=env)
+    print(f"Maintenance page live at https://{domain}")
+
+
+def stop_maintenance(_: Optional[str] = None) -> None:
+    _, dst = maintenance_paths()
+    compose = dst / "docker-compose.yml"
+    if not compose.exists():
+        print("Maintenance compose.yml not found; nothing to stop.")
+        return
+    run(["docker", "compose", "down"], cwd=dst)
+
+
+def destroy_maintenance(_: Optional[str] = None) -> None:
+    _, dst = maintenance_paths()
+    if not dst.exists():
+        print("Maintenance directory missing; nothing to destroy.")
+        return
+    run(["docker", "compose", "down", "-v"], cwd=dst)
+    shutil.rmtree(dst)
+    print("Maintenance add-on removed.")
+
+
+def backup_env_path(custom: Optional[str]) -> Path:
+    if CTX is None:
+        raise RuntimeError("Context not initialised")
+    return Path(custom) if custom else CTX.stoat_dir / "backup.env"
+
+
+def load_backup_config(path: Path, required: bool) -> Dict[str, str]:
+    if path.exists():
+        return load_env_file(path)
+    if required:
+        raise SystemExit(f"ERROR: Backup config not found at {path} (copy overrides/env/backup.env.template)")
+    return {}
+
+
+def aws_env(cfg: Dict[str, str]) -> Dict[str, str]:
+    env = os.environ.copy()
+    access = cfg.get("BACKUP_S3_ACCESS_KEY", "").strip()
+    secret = cfg.get("BACKUP_S3_SECRET_KEY", "").strip()
+    region = cfg.get("BACKUP_S3_REGION", "us-east-1").strip()
+    if access:
+        env["AWS_ACCESS_KEY_ID"] = access
+    if secret:
+        env["AWS_SECRET_ACCESS_KEY"] = secret
+    if region:
+        env["AWS_REGION"] = region
+    return env
+
+
+def backup(env_path: Optional[str], local_only: bool) -> None:
+    if CTX is None:
+        raise RuntimeError("Context not initialised")
+    ensure_core_compose_ready()
+    cfg = load_backup_config(backup_env_path(env_path), required=not local_only)
+
+    timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    backup_name = f"stoat-backup-{timestamp}"
+    tmp_dir = Path(tempfile.gettempdir()) / backup_name
+    if tmp_dir.exists():
+        shutil.rmtree(tmp_dir)
+    tmp_dir.mkdir(parents=True)
+
+    try:
+        print(f"=== Stoat Backup ({backup_name}) ===")
+        ensure_core_compose_ready()
+        result = compose_cmd("ps", "-q", "database", capture_output=True)
+        db_container = result.stdout.strip()
+        if not db_container:
+            raise SystemExit("ERROR: Database container not running. Is Stoat up?")
+
+        mongo_path = tmp_dir / "mongodb.archive.gz"
+        with mongo_path.open("wb") as fh:
+            subprocess.run(
+                ["docker", "exec", db_container, "mongodump", "--archive", "--gzip"],
+                stdout=fh,
+                check=True,
+            )
+
+        minio_dir = CTX.upstream_dir / "data" / "minio"
+        if minio_dir.exists():
+            run([
+                "tar",
+                "czf",
+                str(tmp_dir / "minio-data.tar.gz"),
+                "-C",
+                str(CTX.upstream_dir / "data"),
+                "minio",
+            ])
+        else:
+            print("WARNING: MinIO data directory missing; skipping uploads archive.")
+
+        config_files = [f for f in ("Revolt.toml", ".env.web", "Caddyfile") if (CTX.upstream_dir / f).exists()]
+        if config_files:
+            run([
+                "tar",
+                "czf",
+                str(tmp_dir / "config.tar.gz"),
+                "-C",
+                str(CTX.upstream_dir),
+                *config_files,
+            ])
+        else:
+            print("WARNING: No config files found to back up.")
+
+        archive = Path(tempfile.gettempdir()) / f"{backup_name}.tar.gz"
+        run(["tar", "czf", str(archive), "-C", str(tmp_dir.parent), tmp_dir.name])
+        print(f"Archive created at {archive}")
+
+        if local_only:
+            print("Local-only mode: transfer archive off the server manually.")
+        else:
+            bucket = cfg.get("BACKUP_S3_BUCKET", "").strip()
+            endpoint = cfg.get("BACKUP_S3_ENDPOINT", "").strip()
+            region = cfg.get("BACKUP_S3_REGION", "us-east-1").strip()
+            if not bucket or not endpoint:
+                raise SystemExit("ERROR: BACKUP_S3_BUCKET and BACKUP_S3_ENDPOINT must be set in backup.env")
+            aws_path = shutil.which("aws")
+            rclone_path = shutil.which("rclone")
+            env = aws_env(cfg)
+            if aws_path:
+                run(
+                    [
+                        aws_path,
+                        "s3",
+                        "cp",
+                        str(archive),
+                        f"s3://{bucket}/{backup_name}.tar.gz",
+                        "--endpoint-url",
+                        endpoint,
+                        "--region",
+                        region,
+                    ],
+                    env=env,
+                )
+                print(f"Uploaded to s3://{bucket}/{backup_name}.tar.gz")
+
+                retain = int(cfg.get("BACKUP_RETAIN_DAILY", "7") or 0)
+                if retain > 0:
+                    result = subprocess.run(
+                        [
+                            aws_path,
+                            "s3",
+                            "ls",
+                            f"s3://{bucket}/stoat-backup-",
+                            "--endpoint-url",
+                            endpoint,
+                            "--region",
+                            region,
+                        ],
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                        env=env,
+                    )
+                    entries = [line.strip().split()[-1] for line in result.stdout.splitlines() if line.strip()]
+                    backups = [e for e in entries if e.endswith(".tar.gz")]
+                    backups.sort(reverse=True)
+                    for old in backups[retain:]:
+                        run(
+                            [
+                                aws_path,
+                                "s3",
+                                "rm",
+                                f"s3://{bucket}/{old}",
+                                "--endpoint-url",
+                                endpoint,
+                                "--region",
+                                region,
+                            ],
+                            env=env,
+                        )
+                        print(f"Deleted old backup {old}")
+                archive.unlink(missing_ok=True)
+            elif rclone_path:
+                remote = cfg.get("BACKUP_RCLONE_REMOTE", "stoat-backup")
+                run([rclone_path, "copy", str(archive), f"{remote}:{bucket}/"])
+                print(f"Uploaded via rclone to {remote}:{bucket}/{backup_name}.tar.gz")
+                archive.unlink(missing_ok=True)
+            else:
+                raise SystemExit("ERROR: Install 'aws' CLI or 'rclone' to upload backups")
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def restore(env_path: Optional[str], from_file: Optional[str], backup_name: Optional[str]) -> None:
+    if CTX is None:
+        raise RuntimeError("Context not initialised")
+    ensure_core_compose_ready()
+    cfg: Dict[str, str] = {}
+    archive_path: Path
+
+    if from_file:
+        archive_path = Path(from_file)
+        if not archive_path.exists():
+            raise SystemExit(f"ERROR: Archive not found at {archive_path}")
+        print(f"Restoring from local archive {archive_path}")
+    else:
+        if not backup_name:
+            raise SystemExit("ERROR: Specify a backup name or --from-file")
+        cfg = load_backup_config(backup_env_path(env_path), required=True)
+        aws_path = shutil.which("aws")
+        if not aws_path:
+            raise SystemExit("ERROR: aws CLI is required to download backups")
+        bucket = cfg.get("BACKUP_S3_BUCKET", "").strip()
+        endpoint = cfg.get("BACKUP_S3_ENDPOINT", "").strip()
+        region = cfg.get("BACKUP_S3_REGION", "us-east-1").strip()
+        if not bucket or not endpoint:
+            raise SystemExit("ERROR: BACKUP_S3_BUCKET and BACKUP_S3_ENDPOINT must be set in backup.env")
+        env = aws_env(cfg)
+        target = backup_name
+        if target == "latest":
+            result = subprocess.run(
+                [
+                    aws_path,
+                    "s3",
+                    "ls",
+                    f"s3://{bucket}/stoat-backup-",
+                    "--endpoint-url",
+                    endpoint,
+                    "--region",
+                    region,
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+                env=env,
+            )
+            entries = [line.strip().split()[-1] for line in result.stdout.splitlines() if line.strip()]
+            backups = [e for e in entries if e.endswith(".tar.gz")]
+            backups.sort(reverse=True)
+            if not backups:
+                raise SystemExit("ERROR: No backups found in S3")
+            target = backups[0].rstrip(".tar.gz")
+            print(f"Latest backup: {target}")
+        archive_path = Path(tempfile.gettempdir()) / f"{target}.tar.gz"
+        run(
+            [
+                aws_path,
+                "s3",
+                "cp",
+                f"s3://{bucket}/{target}.tar.gz",
+                str(archive_path),
+                "--endpoint-url",
+                endpoint,
+                "--region",
+                region,
+            ],
+            env=env,
+        )
+        print(f"Downloaded backup to {archive_path}")
+
+    print("Stopping Stoat services...")
+    compose_cmd("down")
+
+    restore_dir = Path(tempfile.mkdtemp(prefix="stoat-restore-"))
+    try:
+        run(["tar", "xzf", str(archive_path), "-C", str(restore_dir), "--strip-components=1"])
+        config_archive = restore_dir / "config.tar.gz"
+        if config_archive.exists():
+            run(["tar", "xzf", str(config_archive), "-C", str(CTX.upstream_dir)])
+        minio_archive = restore_dir / "minio-data.tar.gz"
+        if minio_archive.exists():
+            shutil.rmtree(CTX.upstream_dir / "data" / "minio", ignore_errors=True)
+            run(["tar", "xzf", str(minio_archive), "-C", str(CTX.upstream_dir / "data")])
+
+        mongo_archive = restore_dir / "mongodb.archive.gz"
+        if mongo_archive.exists():
+            compose_cmd("up", "-d", "database")
+            print("Waiting for MongoDB...")
+            time.sleep(10)
+            db_container = compose_cmd("ps", "-q", "database", capture_output=True).stdout.strip()
+            if not db_container:
+                raise SystemExit("ERROR: Failed to start database container")
+            with mongo_archive.open("rb") as fh:
+                subprocess.run(
+                    ["docker", "exec", "-i", db_container, "mongorestore", "--archive", "--gzip", "--drop"],
+                    stdin=fh,
+                    check=True,
+                )
+            compose_cmd("stop", "database")
+
+        compose_cmd("up", "-d")
+        print("Services started. Running health check...")
+        time.sleep(10)
+        run_healthcheck()
+    finally:
+        shutil.rmtree(restore_dir, ignore_errors=True)
+        if not from_file and archive_path.exists():
+            archive_path.unlink()
+
+    print("Restore complete. Verify the instance manually.")
+
+
+SERVICE_ACTIONS = {
+    "core": {
+        "deploy": deploy_core,
+        "stop": stop_core,
+        "destroy": destroy_core,
+    },
+    "caddy": {
+        "deploy": deploy_caddy,
+        "stop": stop_caddy,
+        "destroy": destroy_caddy,
+    },
+    "authentik": {
+        "deploy": deploy_authentik,
+        "stop": stop_authentik,
+        "destroy": destroy_authentik,
+    },
+    "admin": {
+        "deploy": deploy_admin_panel,
+        "stop": stop_admin_panel,
+        "destroy": destroy_admin_panel,
+    },
+    "maintenance": {
+        "deploy": deploy_maintenance,
+        "stop": stop_maintenance,
+        "destroy": destroy_maintenance,
+    },
+}
+
+ORDER = ["caddy", "core", "authentik", "admin"]
+
+
+def run_action(action: str, target: str, domain: Optional[str], *, assume_yes: bool = False) -> None:
+    if target == "all":
+        for service in ORDER:
+            print(f"=== {action.upper()} {service} ===")
+            handler = SERVICE_ACTIONS[service][action]
+            if action == "destroy" and service == "core":
+                handler(assume_yes)
+            else:
+                handler()
+    else:
+        handler = SERVICE_ACTIONS[target][action]
+        if target == "maintenance":
+            handler(domain)
+        elif action == "destroy" and target == "core":
+            handler(assume_yes)
+        else:
+            handler()
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Stoat deployment helper")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    for action in ("deploy", "stop", "destroy"):
+        sub = subparsers.add_parser(action, help=f"{action.capitalize()} services")
+        sub.add_argument("target", choices=["core", "caddy", "authentik", "admin", "maintenance", "all"], help="Service to act on")
+        sub.add_argument("--domain", help="Hostname for maintenance mode", default=None)
+        if action == "destroy":
+            sub.add_argument("--assume-yes", action="store_true", help="Skip confirmation prompt")
+    backup_parser = subparsers.add_parser("backup", help="Create a backup archive")
+    backup_parser.add_argument("--env", help="Path to backup.env", default=None)
+    backup_parser.add_argument("--local-only", action="store_true", help="Skip S3 upload")
+
+    restore_parser = subparsers.add_parser("restore", help="Restore from backup")
+    restore_parser.add_argument("--env", help="Path to backup.env", default=None)
+    restore_parser.add_argument("--from-file", help="Restore from local archive")
+    restore_parser.add_argument("backup", nargs="?", help="Backup name from S3 (use 'latest')")
+
+    return parser
+
+
+def main() -> None:
+    parser = build_parser()
+    args = parser.parse_args()
+    global CTX
+    CTX = StoatContext()
+    if args.command in {"deploy", "stop", "destroy"}:
+        run_action(
+            args.command,
+            args.target,
+            getattr(args, "domain", None),
+            assume_yes=getattr(args, "assume_yes", False),
+        )
+    elif args.command == "backup":
+        backup(args.env, args.local_only)
+    elif args.command == "restore":
+        restore(args.env, getattr(args, "from_file", None), getattr(args, "backup", None))
+
+
+if __name__ == "__main__":
+    main()

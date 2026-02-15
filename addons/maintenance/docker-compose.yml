@@ -1,0 +1,18 @@
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./index.html:/srv/index.html:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    environment:
+      - MAINTENANCE_DOMAIN=${MAINTENANCE_DOMAIN:-localhost}
+
+volumes:
+  caddy-data:
+  caddy-config:

@@ -1,0 +1,16 @@
+services:
+  admin-panel:
+    build:
+      context: .
+    image: stoatctl/admin-panel:latest
+    restart: unless-stopped
+    env_file:
+      - .env.local
+    networks:
+      - stoat
+    ports:
+      - 127.0.0.1:3100:3000
+
+networks:
+  stoat:
+    external: true

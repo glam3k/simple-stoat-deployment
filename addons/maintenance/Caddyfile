@@ -1,0 +1,8 @@
+{$MAINTENANCE_DOMAIN:localhost} {
+    root * /srv
+    file_server
+    header {
+        Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+        X-Content-Type-Options nosniff
+    }
+}

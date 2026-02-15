@@ -1,0 +1,30 @@
+# docker-compose override to pin infrastructure images by digest
+# Update digests via docs/update-procedure.md instructions whenever bumping dependencies
+services:
+  database:
+    image: docker.io/mongo@sha256:0032d2ca20db5fa34926f196c8a43b74e34ed239a7f2453ff1505b6f12ba8ea6 # mongo:7.0.14
+    networks:
+      - default
+      - stoat
+  redis:
+    image: docker.io/eqalpha/keydb@sha256:6537505c42355ca1f571276bddf83f5b750f760f07b2a185a676481791e388ac # keydb:latest (digest pinned)
+    networks:
+      - default
+      - stoat
+  rabbit:
+    image: docker.io/rabbitmq@sha256:82ee1d53d63c646b2fbaacfe4c5fb0e01a447047df585d16836ae236637bb15a # rabbitmq:4.0.5
+  minio:
+    image: docker.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e # RELEASE.2025-09-07T16-13-09Z
+  caddy:
+    image: docker.io/caddy@sha256:226d1f059b75399fe19182893c7184591c07b97afc8dfcf44eeb80c9a77a530f # caddy:2.8.4
+    networks:
+      - default
+      - stoat
+  web:
+    image: ghcr.io/revoltchat/client@sha256:5cc05853c215a02ee3d1f71390ad00af06c7ef53602b4b21f419f8702607d8c8 # client:master digest pinned
+  createbuckets:
+    image: docker.io/minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727 # RELEASE.2025-08-13T08-35-41Z
+
+networks:
+  stoat:
+    external: true

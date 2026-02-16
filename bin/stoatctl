@@ -89,6 +89,7 @@ class StoatContext:
         self.stoat_host = derive_hostname(self.env, "STOAT_FQDN", "STOAT_SUBDOMAIN", "chat")
         self.auth_host = derive_hostname(self.env, "AUTH_FQDN", "AUTH_SUBDOMAIN", "sso")
         self.admin_host = derive_hostname(self.env, "ADMIN_FQDN", "ADMIN_SUBDOMAIN", "admin")
+        self.grafana_host = derive_hostname(self.env, "GRAFANA_FQDN", "GRAFANA_SUBDOMAIN", "grafana")
         self.admin_email = derive_admin_email(self.env, self.base_domain)
 
         self.upstream_dir = self.stoat_dir / "upstream"
@@ -118,6 +119,7 @@ def addon_env() -> Dict[str, str]:
     if CTX is None:
         raise RuntimeError("Context not initialised")
     env.update(CTX.env)
+    env.setdefault("GRAFANA_HOST", CTX.grafana_host)
     return env
 
 
@@ -209,6 +211,13 @@ def docker_compose_down(remove_volumes: bool = False) -> None:
 
 def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
+
+
+def env_path(key: str, default: Path) -> Path:
+    if CTX is None:
+        raise RuntimeError("Context not initialised")
+    value = CTX.env.get(key, "").strip()
+    return Path(value) if value else default
 
 
 def wait_for_http_service(
@@ -543,6 +552,62 @@ def destroy_admin_panel() -> None:
     run(["docker", "compose", "-f", "docker-compose.yml", "down", "-v"], cwd=dst, env=addon_env())
     shutil.rmtree(dst)
     print("Admin panel add-on removed.")
+
+
+def observability_enabled() -> bool:
+    if CTX is None:
+        raise RuntimeError("Context not initialised")
+    return CTX.env.get("OBSERVABILITY_ENABLED", "1").strip() not in {"0", "false", "False"}
+
+
+def ensure_observability_data_dirs() -> None:
+    if CTX is None:
+        raise RuntimeError("Context not initialised")
+    defaults = {
+        "PROMTAIL_STATE_DIR": CTX.stoat_dir / "data" / "promtail",
+        "OBS_LOKI_DATA_DIR": CTX.stoat_dir / "data" / "loki",
+        "OBS_PROM_DATA_DIR": CTX.stoat_dir / "data" / "prometheus",
+        "OBS_GRAFANA_DATA_DIR": CTX.stoat_dir / "data" / "grafana",
+    }
+    for key, default in defaults.items():
+        path = env_path(key, default)
+        ensure_dir(path)
+
+
+def deploy_observability() -> None:
+    if CTX is None:
+        raise RuntimeError("Context not initialised")
+    if not observability_enabled():
+        print("Observability disabled in .env; skipping deploy.")
+        return
+    src, dst = addon_paths("observability")
+    if not src.exists():
+        raise SystemExit(f"ERROR: {src} not found")
+    ensure_dir(dst)
+    rsync_tree(src, dst, [])
+    ensure_observability_data_dirs()
+    ensure_network()
+    run(["docker", "compose", "up", "-d"], cwd=dst, env=addon_env())
+    write_caddy_fragment("grafana", CTX.grafana_host, "grafana:3000")
+
+
+def stop_observability() -> None:
+    _, dst = addon_paths("observability")
+    compose = dst / "docker-compose.yml"
+    if not compose.exists():
+        print("Observability compose.yml not found; nothing to stop.")
+        return
+    run(["docker", "compose", "down"], cwd=dst, env=addon_env())
+
+
+def destroy_observability() -> None:
+    _, dst = addon_paths("observability")
+    if not dst.exists():
+        print("Observability directory missing; nothing to destroy.")
+        return
+    run(["docker", "compose", "down", "-v"], cwd=dst, env=addon_env())
+    shutil.rmtree(dst)
+    print("Observability add-on removed.")
 
 
 def maintenance_paths() -> tuple[Path, Path]:
@@ -880,6 +945,11 @@ SERVICE_ACTIONS = {
         "stop": stop_admin_panel,
         "destroy": destroy_admin_panel,
     },
+    "observability": {
+        "deploy": deploy_observability,
+        "stop": stop_observability,
+        "destroy": destroy_observability,
+    },
     "maintenance": {
         "deploy": deploy_maintenance,
         "stop": stop_maintenance,
@@ -887,7 +957,7 @@ SERVICE_ACTIONS = {
     },
 }
 
-ORDER = ["caddy", "core", "authentik", "admin"]
+ORDER = ["caddy", "observability", "core", "authentik", "admin"]
 
 
 def wait_for_ready(
@@ -940,10 +1010,43 @@ def wait_for_ready(
         )
         return
 
+    if target == "observability":
+        url = f"https://{CTX.grafana_host}"
+        wait_for_http_service(
+            "Grafana",
+            url,
+            attempts=attempts,
+            interval=interval,
+            timeout=timeout,
+            insecure=insecure,
+        )
+        return
+
     raise SystemExit(f"ERROR: Unknown readiness target '{target}'")
 
 
-def run_action(action: str, target: str, domain: Optional[str], *, assume_yes: bool = False) -> None:
+def run_action(
+    action: str,
+    target: str,
+    domain: Optional[str],
+    *,
+    assume_yes: bool = False,
+    wait_options: Optional[dict] = None,
+) -> None:
+    def apply_wait(name: str) -> None:
+        if action != "deploy" or not wait_options:
+            return
+        if name not in {"core", "authentik", "admin", "observability"}:
+            return
+        print(f"Waiting for {name} to become ready...")
+        wait_for_ready(
+            name,
+            attempts=wait_options["attempts"],
+            interval=wait_options["interval"],
+            timeout=wait_options["timeout"],
+            insecure=wait_options["insecure"],
+        )
+
     if target == "all":
         for service in ORDER:
             print(f"=== {action.upper()} {service} ===")
@@ -952,6 +1055,7 @@ def run_action(action: str, target: str, domain: Optional[str], *, assume_yes: b
                 handler(assume_yes)
             else:
                 handler()
+            apply_wait(service)
     else:
         handler = SERVICE_ACTIONS[target][action]
         if target == "maintenance":
@@ -960,6 +1064,7 @@ def run_action(action: str, target: str, domain: Optional[str], *, assume_yes: b
             handler(assume_yes)
         else:
             handler()
+        apply_wait(target)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -967,8 +1072,37 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     for action in ("deploy", "stop", "destroy"):
         sub = subparsers.add_parser(action, help=f"{action.capitalize()} services")
-        sub.add_argument("target", choices=["core", "caddy", "authentik", "admin", "maintenance", "all"], help="Service to act on")
+        sub.add_argument("target", choices=["core", "caddy", "observability", "authentik", "admin", "maintenance", "all"], help="Service to act on")
         sub.add_argument("--domain", help="Hostname for maintenance mode", default=None)
+        if action == "deploy":
+            sub.add_argument(
+                "--wait",
+                action="store_true",
+                help="Block until the deployed service reports healthy",
+            )
+            sub.add_argument(
+                "--wait-attempts",
+                type=int,
+                default=30,
+                help="Attempts before wait-for-ready fails",
+            )
+            sub.add_argument(
+                "--wait-interval",
+                type=int,
+                default=5,
+                help="Seconds between readiness checks",
+            )
+            sub.add_argument(
+                "--wait-timeout",
+                type=int,
+                default=10,
+                help="Per-request timeout in seconds",
+            )
+            sub.add_argument(
+                "--wait-insecure",
+                action="store_true",
+                help="Skip TLS verification during readiness checks",
+            )
         if action == "destroy":
             sub.add_argument("--assume-yes", action="store_true", help="Skip confirmation prompt")
     backup_parser = subparsers.add_parser("backup", help="Create a backup archive")
@@ -983,7 +1117,7 @@ def build_parser() -> argparse.ArgumentParser:
     wait_parser = subparsers.add_parser("wait-for-ready", help="Block until a service is healthy")
     wait_parser.add_argument(
         "target",
-        choices=["core", "authentik", "admin", "all"],
+        choices=["core", "authentik", "admin", "observability", "all"],
         help="Service to wait on",
     )
     wait_parser.add_argument(
@@ -1019,11 +1153,20 @@ def main() -> None:
     global CTX
     CTX = StoatContext()
     if args.command in {"deploy", "stop", "destroy"}:
+        wait_opts = None
+        if args.command == "deploy" and getattr(args, "wait", False):
+            wait_opts = {
+                "attempts": args.wait_attempts,
+                "interval": args.wait_interval,
+                "timeout": args.wait_timeout,
+                "insecure": args.wait_insecure,
+            }
         run_action(
             args.command,
             args.target,
             getattr(args, "domain", None),
             assume_yes=getattr(args, "assume_yes", False),
+            wait_options=wait_opts,
         )
     elif args.command == "backup":
         backup(args.env, args.local_only)

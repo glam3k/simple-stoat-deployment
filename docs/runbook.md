@@ -87,7 +87,8 @@ bin/stoatctl stop core
 bin/stoatctl destroy core
 
 # Addons
-bin/stoatctl deploy authentik
+bin/stoatctl deploy observability --wait
+bin/stoatctl deploy authentik --wait
 bin/stoatctl deploy admin
 bin/stoatctl deploy maintenance --domain example.com
 
@@ -96,6 +97,8 @@ bin/bootstrap.sh --domain chat.example.com --admin-email you@example.com
 
 # Rebuild Caddyfile without redeploying
 bin/rebuild_caddy.sh
+# Add --wait to block until the service reports healthy
+bin/stoatctl deploy core --wait
 ```
 
 ## Resource Limits
@@ -134,6 +137,22 @@ bin/stoatctl wait-for-ready authentik
 # Admin panel HTTPS check (use --insecure if you're trusting the internal CA)
 bin/stoatctl wait-for-ready admin --insecure
 ```
+
+## Observability Stack
+
+If `OBSERVABILITY_ENABLED=1` in `.env`, you can deploy the Promtail/Loki/
+Prometheus/Grafana add-on to keep local logs and metrics:
+
+```bash
+bin/stoatctl deploy observability --wait
+```
+
+Grafana is exposed via Caddy at `https://your-grafana-host` (defaults to
+`grafana.<BASE_DOMAIN>`). Credentials come from `GRAFANA_ADMIN_USER` /
+`GRAFANA_ADMIN_PASSWORD` in `.env`. Promtail stores its `positions.yaml` under
+`PROMTAIL_STATE_DIR`, so it resumes after restarts as long as Docker's log
+rotation (`/etc/docker/daemon.json`) keeps a few files per container (e.g.
+`"max-size": "50m"`, `"max-file": "3"`).
 
 ## Health Check
 

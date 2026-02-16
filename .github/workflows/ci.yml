@@ -80,9 +80,9 @@ jobs:
         run: |
           mkdir -p "$STOAT_DIR"
           STOAT_DIR="$STOAT_DIR" bin/stoatctl deploy caddy
-      - name: Deploy observability stack
+      - name: Show generated Caddyfile
         run: |
-          STOAT_DIR="$STOAT_DIR" bin/stoatctl deploy observability --wait
+          cat "$STOAT_DIR/upstream/Caddyfile"
       - name: Trust Caddy internal CA
         run: |
           cd "$STOAT_DIR/upstream"
@@ -97,6 +97,12 @@ jobs:
           sudo update-ca-certificates
       - name: Fix permissions on workspace copy
         run: sudo chown -R $USER:$USER "$STOAT_DIR"
+      - name: Deploy observability stack
+        run: |
+          STOAT_DIR="$STOAT_DIR" bin/stoatctl deploy observability --wait
+      - name: Show generated Caddyfile
+        run: |
+          cat "$STOAT_DIR/upstream/Caddyfile"
       - name: Deploy core stack
         run: |
           STOAT_DIR="$STOAT_DIR" bin/stoatctl deploy core

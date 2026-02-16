@@ -87,6 +87,9 @@ jobs:
         run: |
           mkdir -p "$STOAT_DIR"
           STOAT_DIR="$STOAT_DIR" bin/stoatctl deploy caddy
+      - name: Deploy observability stack
+        run: |
+          STOAT_DIR="$STOAT_DIR" bin/stoatctl deploy observability --wait
       - name: Trust Caddy internal CA
         run: |
           cd "$STOAT_DIR/upstream"

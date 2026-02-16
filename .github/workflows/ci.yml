@@ -50,6 +50,7 @@ jobs:
           STOAT_SUBDOMAIN=chat
           AUTH_SUBDOMAIN=sso
           ADMIN_SUBDOMAIN=admin
+          CADDY_USE_INTERNAL_CA=1
           ENV
       - name: Configure Authentik env
         run: |
@@ -58,7 +59,7 @@ jobs:
           PG_PASS=authentikpassword
           PG_DB=authentik
           AUTHENTIK_SECRET_KEY=devsecretkey1234567890devsecretkey
-          AUTHENTIK_EMAIL__FROM="Stoat CI" <noreply@example.com>
+          AUTHENTIK_EMAIL__FROM="Stoat CI <noreply@example.com>"
           AUTHENTIK_EMAIL__HOST=localhost
           AUTHENTIK_EMAIL__PORT=25
           AUTHENTIK_EMAIL__USE_TLS=false
@@ -82,13 +83,132 @@ jobs:
           echo "127.0.0.1 chat.ci.local" | sudo tee -a /etc/hosts
           echo "127.0.0.1 sso.ci.local" | sudo tee -a /etc/hosts
           echo "127.0.0.1 admin.ci.local" | sudo tee -a /etc/hosts
-      - name: Deploy core stack
+      - name: Deploy Caddy
         run: |
           mkdir -p "$STOAT_DIR"
+          STOAT_DIR="$STOAT_DIR" bin/stoatctl deploy caddy
+      - name: Trust Caddy internal CA
+        run: |
+          cd "$STOAT_DIR/upstream"
+          for i in {1..10}; do
+            if docker compose -f compose.yml -f "$STOAT_DIR/overrides/docker-compose.override.yml" \
+              cp caddy:/data/caddy/pki/authorities/local/root.crt /tmp/stoat-local-ca.crt 2>/dev/null; then
+              break
+            fi
+            sleep 3
+          done
+          sudo cp /tmp/stoat-local-ca.crt /usr/local/share/ca-certificates/stoat-local-ca.crt
+          sudo update-ca-certificates
+      - name: Fix permissions on workspace copy
+        run: sudo chown -R $USER:$USER "$STOAT_DIR"
+      - name: Deploy core stack
+        run: |
           STOAT_DIR="$STOAT_DIR" bin/stoatctl deploy core
+      - name: Dump Caddyfile after core deploy
+        run: |
+          STOAT_DIR="$STOAT_DIR" bin/show_caddyfile.sh
+      - name: Show generated Caddyfile
+        run: |
+          cat "$STOAT_DIR/upstream/Caddyfile"
       - name: Deploy Authentik
         run: |
           STOAT_DIR="$STOAT_DIR" bin/stoatctl deploy authentik
+      - name: Dump Caddyfile after authentik deploy
+        run: |
+          STOAT_DIR="$STOAT_DIR" bin/show_caddyfile.sh
+
+      - name: Wait for Authentik readiness
+        run: |
+          set +e
+          attempts=30
+          url="http://sso.ci.local:9000/-/health/ready/"
+          log=$(mktemp)
+
+          echo "waiting for authentik to become ready at $url..."
+
+          while true; do
+            cmd=(curl --silent --show-error --output /dev/null --write-out '%{http_code}' "$url")
+            status="$("${cmd[@]}" 2>"$log")"
+            rc=$?
+
+
+            attempts=$((attempts - 1))
+
+            if [ $attempts -le 0 ]; then
+              echo "error: authentik did not become ready in time." >&2
+              echo "---- curl stderr ----"
+              cat "$log" >&2
+              echo "curl command: ${cmd[*]}"
+              echo "curl exit code: $rc"
+              echo "curl http status: ${status:-n/a}"
+              exit 1
+            fi
+
+            echo "curl command: ${cmd[*]}"
+            echo "curl exit code: $rc"
+            echo "curl http status: ${status:-n/a}"
+            echo "---- curl stderr ----"
+            cat "$log"
+            echo "----------------------"
+
+            if [ $rc -eq 0 ] && [[ "$status" =~ ^2[0-9][0-9]$ ]]; then
+              break
+            fi
+
+            echo "waiting... ($attempts attempts remaining)"
+            sleep 5
+
+          done
+
+          rm -f "$log"
+          echo "success: authentik is ready!"
+
+      - name: Wait for Authentik readiness
+        run: |
+          set +e
+          attempts=30
+          url="http://sso.ci.local:9000/-/health/ready/"
+          log=$(mktemp)
+
+          echo "waiting for authentik to become ready at $url..."
+
+          while true; do
+            cmd=(curl --silent --show-error --output /dev/null --write-out '%{http_code}' "$url")
+            status="$("${cmd[@]}" 2>"$log")"
+            rc=$?
+
+
+            attempts=$((attempts - 1))
+
+            if [ $attempts -le 0 ]; then
+              echo "error: authentik did not become ready in time." >&2
+              echo "---- curl stderr ----"
+              cat "$log" >&2
+              echo "curl command: ${cmd[*]}"
+              echo "curl exit code: $rc"
+              echo "curl http status: ${status:-n/a}"
+              exit 1
+            fi
+
+            echo "curl command: ${cmd[*]}"
+            echo "curl exit code: $rc"
+            echo "curl http status: ${status:-n/a}"
+            echo "---- curl stderr ----"
+            cat "$log"
+            echo "----------------------"
+
+            if [ $rc -eq 0 ] && [[ "$status" =~ ^2[0-9][0-9]$ ]]; then
+              break
+            fi
+
+            echo "waiting... ($attempts attempts remaining)"
+            sleep 5
+
+          done
+
+          rm -f "$log"
+          echo "success: authentik is ready!"
+
       - name: Seed Authentik database
         run: |
           set -euo pipefail
@@ -99,15 +219,109 @@ jobs:
             psql --username "${PG_USER:-authentik}" --dbname "${PG_DB:-authentik}" \
             < "$GITHUB_WORKSPACE/fixtures/authentik-data-ci.sql"
           docker compose up -d server worker
-      - name: Check Authentik readiness
+
+      - name: Wait for Authentik readiness
         run: |
-          curl --retry 15 --retry-all-errors --retry-delay 5 --fail http://sso.ci.local:9000/health/ready/
+          set +e
+          attempts=30
+          url="http://sso.ci.local:9000/-/health/ready/"
+          log=$(mktemp)
+
+          echo "waiting for authentik to become ready at $url..."
+
+          while true; do
+            cmd=(curl --silent --show-error --output /dev/null --write-out '%{http_code}' "$url")
+            status="$("${cmd[@]}" 2>"$log")"
+            rc=$?
+
+
+            attempts=$((attempts - 1))
+
+            if [ $attempts -le 0 ]; then
+              echo "error: authentik did not become ready in time." >&2
+              echo "---- curl stderr ----"
+              cat "$log" >&2
+              echo "curl command: ${cmd[*]}"
+              echo "curl exit code: $rc"
+              echo "curl http status: ${status:-n/a}"
+              exit 1
+            fi
+
+            echo "curl command: ${cmd[*]}"
+            echo "curl exit code: $rc"
+            echo "curl http status: ${status:-n/a}"
+            echo "---- curl stderr ----"
+            cat "$log"
+            echo "----------------------"
+
+            if [ $rc -eq 0 ] && [[ "$status" =~ ^2[0-9][0-9]$ ]]; then
+              break
+            fi
+
+            echo "waiting... ($attempts attempts remaining)"
+            sleep 5
+
+          done
+
+          rm -f "$log"
+          echo "success: authentik is ready!"
+
+      - name: Deploy admin panel
+        run: |
+          STOAT_DIR="$STOAT_DIR" bin/stoatctl deploy admin
+      - name: Dump Caddyfile after admin deploy
+        run: |
+          STOAT_DIR="$STOAT_DIR" bin/show_caddyfile.sh
+      - name: Check admin panel endpoint
+        run: |
+          attempts=20
+          url="https://admin.ci.local"
+          log=$(mktemp)
+
+          echo "waiting for admin panel to respond at $url..."
+
+          while true; do
+            cmd=(curl --silent --show-error --output /dev/null --write-out '%{http_code}' "$url")
+            status="$("${cmd[@]}" 2>"$log")"
+            rc=$?
+
+            if [ $rc -eq 0 ] && [[ "$status" =~ ^2[0-9][0-9]$ ]]; then
+              break
+            fi
+
+            attempts=$((attempts - 1))
+
+            if [ $attempts -le 0 ]; then
+              echo "error: admin panel did not become ready in time." >&2
+              echo "---- curl stderr ----"
+              cat "$log" >&2
+              echo "curl command: ${cmd[*]}"
+              echo "curl exit code: $rc"
+              echo "curl http status: ${status:-n/a}"
+              exit 1
+            fi
+
+            echo "waiting... ($attempts attempts remaining)"
+            echo "curl command: ${cmd[*]}"
+            echo "curl exit code: $rc"
+            echo "curl http status: ${status:-n/a}"
+            echo "---- curl stderr ----"
+            cat "$log"
+            echo "----------------------"
+            sleep 5
+          done
+
+          rm -f "$log"
+          echo "success: admin panel is responding"
+      - name: Destroy admin stack
+        if: always()
+        run: |
+          sudo env STOAT_DIR="$STOAT_DIR" bin/stoatctl destroy admin || true
       - name: Destroy Authentik stack
         if: always()
         run: |
-          STOAT_DIR="$STOAT_DIR" bin/stoatctl destroy authentik || true
+          sudo env STOAT_DIR="$STOAT_DIR" bin/stoatctl destroy authentik || true
       - name: Destroy core stack
         if: always()
         run: |
-          printf 'DESTROY\n' | STOAT_DIR="$STOAT_DIR" bin/stoatctl destroy core || true
-          j
+          sudo env STOAT_DIR="$STOAT_DIR" bin/stoatctl destroy core --assume-yes || true

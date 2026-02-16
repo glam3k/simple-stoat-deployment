@@ -1,9 +1,9 @@
-{$ADMIN_EMAIL:admin@example.com}
 {
-    {$CADDY_ACME}
+    email ${ADMIN_EMAIL}
+${CADDY_ACME}
 }
 
-{$STOAT_HOSTNAME}
+${STOAT_HOSTNAME}
 {
     header {
         Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"

@@ -284,11 +284,12 @@ def stop_core() -> None:
     docker_compose_down(remove_volumes=False)
 
 
-def destroy_core() -> None:
-    confirm = input("Type 'DESTROY' to remove core Stoat stack: ")
-    if confirm != "DESTROY":
-        print("Aborted.")
-        return
+def destroy_core(skip_confirm: bool = False) -> None:
+    if not skip_confirm:
+        confirm = input("Type 'DESTROY' to remove core Stoat stack: ")
+        if confirm != "DESTROY":
+            print("Aborted.")
+            return
     docker_compose_down(remove_volumes=True)
     # Stop addon stacks
     addons_dir = CTX.stoat_dir / "addons"
@@ -299,8 +300,33 @@ def destroy_core() -> None:
                 run(["docker", "compose", "down", "-v"], cwd=addon)
     if CTX.stoat_dir.exists():
         print(f"Removing {CTX.stoat_dir}...")
-        shutil.rmtree(CTX.stoat_dir)
+        try:
+            shutil.rmtree(CTX.stoat_dir)
+        except PermissionError:
+            run(["sudo", "rm", "-rf", str(CTX.stoat_dir)])
     print("Stoat fully destroyed.")
+
+
+def deploy_caddy() -> None:
+    ensure_stoat_dir()
+    ensure_network()
+    copy_repo()
+    init_upstream()
+    generate_config()
+    rebuild_caddy()
+    compose_cmd("up", "-d", "caddy")
+
+
+def stop_caddy() -> None:
+    if not ensure_core_compose_ready(strict=False):
+        return
+    compose_cmd("stop", "caddy")
+
+
+def destroy_caddy() -> None:
+    if not ensure_core_compose_ready(strict=False):
+        return
+    compose_cmd("rm", "-sf", "caddy")
 
 
 def addon_paths(name: str) -> tuple[Path, Path]:
@@ -360,26 +386,43 @@ def sync_admin_env(env_path: Path) -> None:
     update_env_file(env_path, updates)
 
 
-def ensure_admin_submodule(src: Path) -> None:
-    if (src / "src/package.json").exists():
+
+def ensure_admin_panel_sources(addon_root: Path) -> None:
+    if CTX is None:
+        raise RuntimeError("Context not initialised")
+    checkout = addon_root / "src"
+    if checkout.exists() and any(checkout.iterdir()):
         return
-    run([
-        "git",
-        "-C",
-        str(CTX.infra_root),
-        "submodule",
-        "update",
-        "--init",
-        "--recursive",
-        "addons/admin-panel/src",
-    ])
-    if not (src / "src/package.json").exists():
-        raise SystemExit("ERROR: admin panel submodule missing even after init")
+
+    repo_root = CTX.infra_root
+    git_dir = repo_root / ".git"
+    if not git_dir.exists():
+        raise SystemExit(
+            "ERROR: Admin panel sources are missing and this checkout does not contain Git metadata. "
+            "Clone the infra repository with `git clone --recursive` and retry."
+        )
+
+    rel_path = addon_root.relative_to(repo_root)
+    submodule_path = rel_path / "src"
+    print("Admin panel sources missing; initialising git submodule...")
+    try:
+        run(["git", "submodule", "update", "--init", "--recursive", str(submodule_path)], cwd=repo_root)
+    except subprocess.CalledProcessError as exc:  # pragma: no cover
+        raise SystemExit(
+            "ERROR: Failed to fetch the admin panel submodule. "
+            "Run `git submodule update --init --recursive addons/admin-panel/src` and retry."
+        ) from exc
+
+    if not (checkout.exists() and any(checkout.iterdir())):
+        raise SystemExit(
+            "ERROR: Admin panel sources are still missing after submodule initialisation. Check your Git setup."
+        )
+
 
 
 def deploy_admin_panel() -> None:
     src, dst = addon_paths("admin-panel")
-    ensure_admin_submodule(src)
+    ensure_admin_panel_sources(src)
     ensure_dir(dst)
     rsync_tree(src, dst, [".env.local", ".env.build"])
 
@@ -738,6 +781,11 @@ SERVICE_ACTIONS = {
         "stop": stop_core,
         "destroy": destroy_core,
     },
+    "caddy": {
+        "deploy": deploy_caddy,
+        "stop": stop_caddy,
+        "destroy": destroy_caddy,
+    },
     "authentik": {
         "deploy": deploy_authentik,
         "stop": stop_authentik,
@@ -755,18 +803,24 @@ SERVICE_ACTIONS = {
     },
 }
 
-ORDER = ["core", "authentik", "admin"]
+ORDER = ["caddy", "core", "authentik", "admin"]
 
 
-def run_action(action: str, target: str, domain: Optional[str]) -> None:
+def run_action(action: str, target: str, domain: Optional[str], *, assume_yes: bool = False) -> None:
     if target == "all":
         for service in ORDER:
             print(f"=== {action.upper()} {service} ===")
-            SERVICE_ACTIONS[service][action]()
+            handler = SERVICE_ACTIONS[service][action]
+            if action == "destroy" and service == "core":
+                handler(assume_yes)
+            else:
+                handler()
     else:
         handler = SERVICE_ACTIONS[target][action]
         if target == "maintenance":
             handler(domain)
+        elif action == "destroy" and target == "core":
+            handler(assume_yes)
         else:
             handler()
 
@@ -776,8 +830,10 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     for action in ("deploy", "stop", "destroy"):
         sub = subparsers.add_parser(action, help=f"{action.capitalize()} services")
-        sub.add_argument("target", choices=["core", "authentik", "admin", "maintenance", "all"], help="Service to act on")
+        sub.add_argument("target", choices=["core", "caddy", "authentik", "admin", "maintenance", "all"], help="Service to act on")
         sub.add_argument("--domain", help="Hostname for maintenance mode", default=None)
+        if action == "destroy":
+            sub.add_argument("--assume-yes", action="store_true", help="Skip confirmation prompt")
     backup_parser = subparsers.add_parser("backup", help="Create a backup archive")
     backup_parser.add_argument("--env", help="Path to backup.env", default=None)
     backup_parser.add_argument("--local-only", action="store_true", help="Skip S3 upload")
@@ -796,7 +852,12 @@ def main() -> None:
     global CTX
     CTX = StoatContext()
     if args.command in {"deploy", "stop", "destroy"}:
-        run_action(args.command, args.target, getattr(args, "domain", None))
+        run_action(
+            args.command,
+            args.target,
+            getattr(args, "domain", None),
+            assume_yes=getattr(args, "assume_yes", False),
+        )
     elif args.command == "backup":
         backup(args.env, args.local_only)
     elif args.command == "restore":

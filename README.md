@@ -46,10 +46,12 @@ bin/stoatctl backup --local-only  # test backup locally (uploads when config is 
 ```
 
 The root `.env` file is the single source of truth for hostnames. Set
-`BASE_DOMAIN=<domain>' (for example) plus optional `STOAT_SUBDOMAIN`,
+`BASE_DOMAIN=<domain>` (for example) plus optional `STOAT_SUBDOMAIN`,
 `AUTH_SUBDOMAIN`, and `ADMIN_SUBDOMAIN`. The deploy scripts derive
 `stoat.<domain>`, `sso.<domain>`, and `admin.<domain>` (overridable via
-`*_FQDN`) and log the values they use.
+`*_FQDN`) and log the values they use. Set `CADDY_USE_INTERNAL_CA=1` if you
+want Caddy to use its internal CA (useful for CI/local without public DNS);
+leave it at 0 to use Let's Encrypt on public deployments.
 
 During bootstrap the admin HR records are created automatically using the
 `admin@BASE_DOMAIN` address (override by setting `BOOTSTRAP_ADMIN_EMAIL` if you

@@ -17,17 +17,14 @@ INTERNAL_CA="${CADDY_USE_INTERNAL_CA:-0}"
 mkdir -p "$(dirname "$OUTPUT_BASE")"
 
 if [[ "$INTERNAL_CA" == "1" ]]; then
-    CADDY_ACME=$(cat <<ACME
-    acme_ca https://caddy.localhost.direct/api/acme/local/directory
-    cert_issuer internal
-ACME
-)
+    CADDY_ACME=$'    acme_ca https://caddy.localhost.direct/api/acme/local/directory\n    cert_issuer internal'
 else
     CADDY_ACME=""
 fi
 export CADDY_ACME
 
-export STOAT_HOSTNAME ADMIN_EMAIL
+ADMIN_EMAIL_RENDER="${ADMIN_EMAIL:-admin@example.com}"
+export STOAT_HOSTNAME ADMIN_EMAIL="$ADMIN_EMAIL_RENDER"
 
 if command -v envsubst >/dev/null 2>&1; then
     envsubst < "$BASE_TEMPLATE" > "$OUTPUT_BASE"
@@ -46,9 +43,23 @@ PY
 fi
 
 if [[ "$INTERNAL_CA" == "1" ]]; then
-    CA_CERT="${STOAT_DIR}/upstream/data/caddy/pki/authorities/local/root.crt"
-    if [[ -f "$CA_CERT" ]]; then
-        sudo cp "$CA_CERT" /usr/local/share/ca-certificates/stoat-local-ca.crt
-        sudo update-ca-certificates
+    cd "$STOAT_DIR/upstream"
+    attempts=10
+    ca_tmp=$(mktemp)
+    while [[ $attempts -gt 0 ]]; do
+        if docker compose -f compose.yml -f "$STOAT_DIR/overrides/docker-compose.override.yml" \
+            cp caddy:/data/caddy/pki/authorities/local/root.crt "$ca_tmp" 2>/dev/null; then
+            echo "[render_caddy_base] Installing internal CA certificate" >&2
+            sudo cp "$ca_tmp" /usr/local/share/ca-certificates/stoat-local-ca.crt
+            sudo update-ca-certificates
+            break
+        fi
+        attempts=$((attempts - 1))
+        echo "[render_caddy_base] Waiting for caddy internal CA (attempts left: $attempts)" >&2
+        sleep 1
+    done
+    rm -f "$ca_tmp"
+    if [[ $attempts -le 0 ]]; then
+        echo "[render_caddy_base] Internal CA certificate not available; skipping install" >&2
     fi
 fi

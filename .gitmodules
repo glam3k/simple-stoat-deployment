@@ -1,6 +1,6 @@
 [submodule "upstream"]
 	path = upstream
-	url = https://github.com/revoltchat/self-hosted
+	url = https://github.com/stoatchat/self-hosted
 [submodule "addons/admin-panel/src"]
 	path = addons/admin-panel/src
 	url = https://github.com/revoltchat/admin-panel

@@ -10,8 +10,8 @@ All core data lives under `/opt/stoat/upstream/data/` as bind mounts defined in 
 |---------|-----------|----------|-----------|
 | **MongoDB** (database) | `upstream/data/db/` | User accounts, messages, channels, servers, all app data | Yes — primary datastore |
 | **MinIO** | `upstream/data/minio/` | Uploaded files, avatars, emojis, attachments | Yes — all user uploads |
-| **Caddy** | `upstream/data/caddy-data/` | TLS certificates (Let's Encrypt/ZeroSSL) and OCSP cache | Yes — losing this triggers new cert requests (rate limits apply) |
-| **Caddy config** | `upstream/data/caddy-config/` | Caddy runtime config state | Ephemeral — regenerated on start |
+| **Caddy** | Docker volume `caddy-data` | TLS certificates (Let's Encrypt/ZeroSSL) and OCSP cache | Yes — losing this triggers new cert requests (rate limits apply) |
+| **Caddy config** | Docker volume `caddy-config` | Caddy runtime config state | Ephemeral — regenerated on start |
 | **RabbitMQ** | `upstream/data/rabbit/` | Internal message queue data | Semi-stateful — losing it means undelivered push notifications are dropped |
 | **Redis** (KeyDB) | in-memory | Event broker, session cache | Ephemeral — no disk persistence, rebuilt on restart |
 | **API, Events, Web, Autumn, January, Gifbox** | none | Stateless application containers | No — pulled fresh from images |
@@ -115,5 +115,5 @@ docker compose -f /opt/stoat/upstream/compose.yml \
 **Not backed up** by the script (handle separately or via VPS snapshots):
 - Authentik Postgres database and data directory
 - Authentik `.env` and admin panel `.env.local`
-- TLS certificates (`upstream/data/caddy-data/`)
+- TLS certificates (Docker volume `caddy-data` — list with `docker volume ls`)
 - Addon Docker volumes

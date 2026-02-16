@@ -48,6 +48,10 @@ services:
     networks:
       - default
       - stoat
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy-data:/data
+      - caddy-config:/config
   web:
     image: ghcr.io/revoltchat/client@sha256:5cc05853c215a02ee3d1f71390ad00af06c7ef53602b4b21f419f8702607d8c8 # client:master digest pinned
     deploy:
@@ -81,3 +85,9 @@ services:
 networks:
   stoat:
     external: true
+
+volumes:
+  caddy-data:
+    driver: local
+  caddy-config:
+    driver: local

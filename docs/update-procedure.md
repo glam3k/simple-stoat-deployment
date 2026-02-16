@@ -38,7 +38,7 @@ That's all the update.sh script used to do; keeping the steps explicit makes it
 
 - **All data** — MongoDB, MinIO uploads, RabbitMQ queues (bind mounts under `upstream/data/`)
 - **Config** — `Revolt.toml` and `.env.web` are never touched by update
-- **TLS certificates** — Caddy's cert store in `upstream/data/caddy-data/`
+- **TLS certificates** — Docker volume `caddy-data` (auto-managed by Caddy)
 - **Addon stacks** — Authentik, admin panel, etc. are separate compose stacks and unaffected
 - **Caddyfile** — regenerated from `overrides/Caddyfile.base` + `overrides/Caddyfile.d/*.caddy` fragments
 

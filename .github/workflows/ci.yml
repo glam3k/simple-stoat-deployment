@@ -152,6 +152,10 @@ jobs:
         if: always()
         run: |
           sudo env STOAT_DIR="$STOAT_DIR" bin/stoatctl destroy admin || true
+      - name: Destroy observability stack
+        if: always()
+        run: |
+          sudo env STOAT_DIR="$STOAT_DIR" bin/stoatctl destroy observability || true
       - name: Destroy Authentik stack
         if: always()
         run: |

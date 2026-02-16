@@ -151,8 +151,8 @@ echo ""
 # -------------------------------------------------------------------
 # 6. Python 3
 # -------------------------------------------------------------------
-echo "## 6/9 Installing Python 3..."
-apt-get install -y -qq python3 python3-venv > /dev/null
+echo "## 6/9 Installing Python 3 + jq..."
+apt-get install -y -qq python3 python3-venv jq > /dev/null
 echo "  Python installed: $(python3 --version)"
 echo ""
 

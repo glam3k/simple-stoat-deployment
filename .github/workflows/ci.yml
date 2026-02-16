@@ -76,6 +76,7 @@ jobs:
           echo "127.0.0.1 chat.ci.local" | sudo tee -a /etc/hosts
           echo "127.0.0.1 sso.ci.local" | sudo tee -a /etc/hosts
           echo "127.0.0.1 admin.ci.local" | sudo tee -a /etc/hosts
+          echo "127.0.0.1 grafana.ci.local" | sudo tee -a /etc/hosts
       - name: Deploy Caddy
         run: |
           mkdir -p "$STOAT_DIR"

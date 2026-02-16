@@ -51,6 +51,8 @@ jobs:
           AUTH_SUBDOMAIN=sso
           ADMIN_SUBDOMAIN=admin
           CADDY_USE_INTERNAL_CA=1
+          GRAFANA_ADMIN_USER=admin
+          GRAFANA_ADMIN_PASSWORD=stoatci123
           ENV
       - name: Configure Authentik env
         run: |

@@ -53,8 +53,6 @@ services:
         limits:
           cpus: ${OBS_NODE_EXPORTER_CPUS:-0.1}
           memory: ${OBS_NODE_EXPORTER_MEMORY:-64m}
-        reservations:
-          memory: ${OBS_NODE_EXPORTER_MEMORY_RESERVATION:-32m}
 
   cadvisor:
     image: ${OBS_CADVISOR_IMAGE:-gcr.io/cadvisor/cadvisor:v0.47.2}
@@ -74,8 +72,6 @@ services:
         limits:
           cpus: ${OBS_CADVISOR_CPUS:-0.2}
           memory: ${OBS_CADVISOR_MEMORY:-128m}
-        reservations:
-          memory: ${OBS_CADVISOR_MEMORY_RESERVATION:-64m}
 
   prometheus:
     image: ${OBS_PROMETHEUS_IMAGE:-prom/prometheus:v2.53.0}

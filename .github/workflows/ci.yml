@@ -44,16 +44,7 @@ jobs:
         with:
           submodules: recursive
       - name: Set up env file
-        run: |
-          cat <<'ENV' > .env
-          BASE_DOMAIN=ci.local
-          STOAT_SUBDOMAIN=chat
-          AUTH_SUBDOMAIN=sso
-          ADMIN_SUBDOMAIN=admin
-          CADDY_USE_INTERNAL_CA=1
-          GRAFANA_ADMIN_USER=admin
-          GRAFANA_ADMIN_PASSWORD=stoatci123
-          ENV
+        run: cp .env.example .env
       - name: Configure Authentik env
         run: |
           cat <<'ENV' > addons/authentik/.env

@@ -98,6 +98,43 @@ bin/bootstrap.sh --domain chat.example.com --admin-email you@example.com
 bin/rebuild_caddy.sh
 ```
 
+## Resource Limits
+
+The overrides file enforces conservative CPU/RAM limits for the core Stoat stack.
+Adjust them in `/opt/stoat/.env` before deploying if your VPS has more (or less)
+capacity:
+
+| Service | CPU var (default) | Memory limit var (default) |
+|---------|-------------------|---------------------------|
+| MongoDB | `STOAT_DB_CPUS=1.5` | `STOAT_DB_MEMORY=2g` |
+| KeyDB | `STOAT_REDIS_CPUS=0.5` | `STOAT_REDIS_MEMORY=512m` |
+| RabbitMQ | `STOAT_RABBIT_CPUS=0.5` | `STOAT_RABBIT_MEMORY=1g` |
+| MinIO | `STOAT_MINIO_CPUS=0.5` | `STOAT_MINIO_MEMORY=1g` |
+| API | `STOAT_API_CPUS=1` | `STOAT_API_MEMORY=1g` |
+| Events | `STOAT_EVENTS_CPUS=1` | `STOAT_EVENTS_MEMORY=1g` |
+| Web | `STOAT_WEB_CPUS=0.5` | `STOAT_WEB_MEMORY=512m` |
+
+Each service also has a `_MEMORY_RESERVATION` knob (see `.env.example`). Because
+`stoatctl` always runs `docker compose` with the root `.env`, these values apply
+automatically during deploys—no need to edit the upstream compose file.
+
+## Readiness Waits
+
+`bin/stoatctl wait-for-ready` blocks until a given service is passing its
+readiness probes (same logic used in CI), so you can restart components and
+have the CLI watch for them to settle.
+
+```bash
+# Core stack (wraps bin/healthcheck.sh)
+bin/stoatctl wait-for-ready core
+
+# Authentik readiness probe
+bin/stoatctl wait-for-ready authentik
+
+# Admin panel HTTPS check (use --insecure if you're trusting the internal CA)
+bin/stoatctl wait-for-ready admin --insecure
+```
+
 ## Health Check
 
 ```bash
@@ -152,6 +189,9 @@ sudo ufw status | grep 80
 
 # Restart Caddy to retry
 docker compose restart caddy
+
+# Quick HTTPS probe
+bin/stoatctl wait-for-ready admin
 ```
 
 Note: Let's Encrypt has a rate limit of 5 certificates per exact domain per 168 hours. If you hit this limit, wait for it to reset or use ZeroSSL as an alternative CA (see the `zerossl-ca` branch).

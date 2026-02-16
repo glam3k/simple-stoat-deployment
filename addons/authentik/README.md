@@ -43,6 +43,24 @@ All data is preserved across redeploys. The deploy script's rsync excludes:
 
 Postgres data lives in a Docker volume defined in the addon's `docker-compose.yml`.
 
+## Resource limits
+
+The Authentik Postgres and Redis containers enforce conservative defaults so the
+add-on cannot steal the entire VPS:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AUTHENTIK_POSTGRES_CPUS` | `1` | CPU limit for the Postgres container |
+| `AUTHENTIK_POSTGRES_MEMORY` | `1g` | Memory limit for Postgres |
+| `AUTHENTIK_POSTGRES_MEMORY_RESERVATION` | `512m` | Guaranteed memory for Postgres |
+| `AUTHENTIK_REDIS_CPUS` | `0.5` | CPU limit for Redis |
+| `AUTHENTIK_REDIS_MEMORY` | `256m` | Memory limit for Redis |
+| `AUTHENTIK_REDIS_MEMORY_RESERVATION` | `128m` | Guaranteed memory for Redis |
+
+Set these variables in `/opt/stoat/.env` to match your VPS sizing before running
+`bin/stoatctl deploy authentik`. `stoatctl` forwards the root `.env` values to
+`docker compose`, so no additional overrides are necessary.
+
 ## Notes
 
 - All services bind their HTTP/S ports to `127.0.0.1`, so the UI is only reachable via SSH tunnel or Caddy.

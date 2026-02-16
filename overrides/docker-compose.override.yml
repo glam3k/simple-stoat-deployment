@@ -6,15 +6,43 @@ services:
     networks:
       - default
       - stoat
+    deploy:
+      resources:
+        limits:
+          cpus: ${STOAT_DB_CPUS:-1.5}
+          memory: ${STOAT_DB_MEMORY:-2g}
+        reservations:
+          memory: ${STOAT_DB_MEMORY_RESERVATION:-1g}
   redis:
     image: docker.io/eqalpha/keydb@sha256:6537505c42355ca1f571276bddf83f5b750f760f07b2a185a676481791e388ac # keydb:latest (digest pinned)
     networks:
       - default
       - stoat
+    deploy:
+      resources:
+        limits:
+          cpus: ${STOAT_REDIS_CPUS:-0.5}
+          memory: ${STOAT_REDIS_MEMORY:-512m}
+        reservations:
+          memory: ${STOAT_REDIS_MEMORY_RESERVATION:-256m}
   rabbit:
     image: docker.io/rabbitmq@sha256:82ee1d53d63c646b2fbaacfe4c5fb0e01a447047df585d16836ae236637bb15a # rabbitmq:4.0.5
+    deploy:
+      resources:
+        limits:
+          cpus: ${STOAT_RABBIT_CPUS:-0.5}
+          memory: ${STOAT_RABBIT_MEMORY:-1g}
+        reservations:
+          memory: ${STOAT_RABBIT_MEMORY_RESERVATION:-512m}
   minio:
     image: docker.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e # RELEASE.2025-09-07T16-13-09Z
+    deploy:
+      resources:
+        limits:
+          cpus: ${STOAT_MINIO_CPUS:-0.5}
+          memory: ${STOAT_MINIO_MEMORY:-1g}
+        reservations:
+          memory: ${STOAT_MINIO_MEMORY_RESERVATION:-512m}
   caddy:
     image: docker.io/caddy@sha256:226d1f059b75399fe19182893c7184591c07b97afc8dfcf44eeb80c9a77a530f # caddy:2.8.4
     networks:
@@ -22,8 +50,33 @@ services:
       - stoat
   web:
     image: ghcr.io/revoltchat/client@sha256:5cc05853c215a02ee3d1f71390ad00af06c7ef53602b4b21f419f8702607d8c8 # client:master digest pinned
+    deploy:
+      resources:
+        limits:
+          cpus: ${STOAT_WEB_CPUS:-0.5}
+          memory: ${STOAT_WEB_MEMORY:-512m}
+        reservations:
+          memory: ${STOAT_WEB_MEMORY_RESERVATION:-256m}
   createbuckets:
     image: docker.io/minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727 # RELEASE.2025-08-13T08-35-41Z
+
+  api:
+    deploy:
+      resources:
+        limits:
+          cpus: ${STOAT_API_CPUS:-1}
+          memory: ${STOAT_API_MEMORY:-1g}
+        reservations:
+          memory: ${STOAT_API_MEMORY_RESERVATION:-512m}
+
+  events:
+    deploy:
+      resources:
+        limits:
+          cpus: ${STOAT_EVENTS_CPUS:-1}
+          memory: ${STOAT_EVENTS_MEMORY:-1g}
+        reservations:
+          memory: ${STOAT_EVENTS_MEMORY_RESERVATION:-512m}
 
 networks:
   stoat:

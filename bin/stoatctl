@@ -7,10 +7,13 @@ import getpass
 import os
 import shlex
 import shutil
+import ssl
 import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, Optional
@@ -37,6 +40,7 @@ def compose_cmd(*args: str, capture_output: bool = False) -> subprocess.Complete
         capture_output=capture_output,
         text=True,
         check=True,
+        env=stoat_env(),
     )
 
 
@@ -105,6 +109,15 @@ def stoat_env() -> Dict[str, str]:
         raise RuntimeError("Context not initialised")
     env = os.environ.copy()
     env["STOAT_DIR"] = str(CTX.stoat_dir)
+    env.update(CTX.env)
+    return env
+
+
+def addon_env() -> Dict[str, str]:
+    env = stoat_env()
+    if CTX is None:
+        raise RuntimeError("Context not initialised")
+    env.update(CTX.env)
     return env
 
 
@@ -196,6 +209,77 @@ def docker_compose_down(remove_volumes: bool = False) -> None:
 
 def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
+
+
+def wait_for_http_service(
+    name: str,
+    url: str,
+    *,
+    attempts: int = 30,
+    interval: int = 5,
+    timeout: int = 10,
+    insecure: bool = False,
+) -> None:
+    """Poll an HTTP endpoint until it reports healthy."""
+
+    print(f"waiting for {name} to become ready at {url}...")
+    context: ssl.SSLContext | None = None
+    if url.startswith("https://"):
+        context = ssl.create_default_context()
+        if insecure:
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+
+    last_status: int | None = None
+    last_error: str | None = None
+
+    for remaining in range(attempts, 0, -1):
+        try:
+            kwargs = {"timeout": timeout}
+            if context is not None:
+                kwargs["context"] = context
+            with urllib.request.urlopen(url, **kwargs) as resp:
+                status = resp.getcode()
+                # Drain a byte so the connection closes promptly.
+                resp.read(1)
+            last_status = status
+            last_error = None
+        except urllib.error.HTTPError as exc:
+            last_status = exc.code
+            last_error = str(exc)
+        except urllib.error.URLError as exc:
+            last_status = None
+            last_error = str(exc.reason or exc)
+        except Exception as exc:  # pragma: no cover - defensive
+            last_status = None
+            last_error = str(exc)
+
+        if last_status is not None and 200 <= last_status < 300:
+            print(f"success: {name} is ready (HTTP {last_status}).")
+            return
+
+        if remaining == 1:
+            break
+
+        if last_status is not None:
+            print(
+                f"waiting... ({remaining - 1} attempts remaining, last HTTP status {last_status})"
+            )
+        elif last_error:
+            print(
+                f"waiting... ({remaining - 1} attempts remaining, last error: {last_error})"
+            )
+        else:
+            print(f"waiting... ({remaining - 1} attempts remaining)")
+        time.sleep(interval)
+
+    if last_status is not None:
+        raise SystemExit(
+            f"ERROR: {name} did not become ready in time (last HTTP status {last_status})."
+        )
+    raise SystemExit(
+        f"ERROR: {name} did not become ready in time (last error: {last_error or 'unknown'})."
+    )
 
 
 def write_caddy_fragment(name: str, hostname: str, target: str) -> None:
@@ -352,7 +436,7 @@ def deploy_authentik() -> None:
         ensure_dir(dst / subdir)
 
     ensure_network()
-    run(["docker", "compose", "up", "-d"], cwd=dst)
+    run(["docker", "compose", "up", "-d"], cwd=dst, env=addon_env())
     write_caddy_fragment("authentik", CTX.auth_host, "authentik-server:9000")
 
 
@@ -362,7 +446,7 @@ def stop_authentik() -> None:
     if not compose.exists():
         print("Authentik compose.yml not found; nothing to stop.")
         return
-    run(["docker", "compose", "down"], cwd=dst)
+    run(["docker", "compose", "down"], cwd=dst, env=addon_env())
 
 
 def destroy_authentik() -> None:
@@ -370,7 +454,7 @@ def destroy_authentik() -> None:
     if not dst.exists():
         print("Authentik directory missing; nothing to destroy.")
         return
-    run(["docker", "compose", "down", "-v"], cwd=dst)
+    run(["docker", "compose", "down", "-v"], cwd=dst, env=addon_env())
     shutil.rmtree(dst)
     print("Authentik add-on removed.")
 
@@ -437,8 +521,8 @@ def deploy_admin_panel() -> None:
     generate_build_env(env_local, dst / ".env.build")
 
     ensure_network()
-    run(["docker", "compose", "-f", "docker-compose.yml", "build"], cwd=dst)
-    run(["docker", "compose", "-f", "docker-compose.yml", "up", "-d"], cwd=dst)
+    run(["docker", "compose", "-f", "docker-compose.yml", "build"], cwd=dst, env=addon_env())
+    run(["docker", "compose", "-f", "docker-compose.yml", "up", "-d"], cwd=dst, env=addon_env())
     write_caddy_fragment("admin-panel", CTX.admin_host, "admin-panel:3000")
 
 
@@ -448,7 +532,7 @@ def stop_admin_panel() -> None:
     if not compose.exists():
         print("Admin panel compose.yml not found; nothing to stop.")
         return
-    run(["docker", "compose", "-f", "docker-compose.yml", "down"], cwd=dst)
+    run(["docker", "compose", "-f", "docker-compose.yml", "down"], cwd=dst, env=addon_env())
 
 
 def destroy_admin_panel() -> None:
@@ -456,7 +540,7 @@ def destroy_admin_panel() -> None:
     if not dst.exists():
         print("Admin panel directory missing; nothing to destroy.")
         return
-    run(["docker", "compose", "-f", "docker-compose.yml", "down", "-v"], cwd=dst)
+    run(["docker", "compose", "-f", "docker-compose.yml", "down", "-v"], cwd=dst, env=addon_env())
     shutil.rmtree(dst)
     print("Admin panel add-on removed.")
 
@@ -478,7 +562,7 @@ def deploy_maintenance(domain: Optional[str]) -> None:
         raise SystemExit(f"ERROR: {src} not found.")
     ensure_dir(dst)
     rsync_tree(src, dst, [])
-    env = os.environ.copy()
+    env = addon_env()
     env["MAINTENANCE_DOMAIN"] = domain
     run(["docker", "compose", "up", "-d"], cwd=dst, env=env)
     print(f"Maintenance page live at https://{domain}")
@@ -490,7 +574,7 @@ def stop_maintenance(_: Optional[str] = None) -> None:
     if not compose.exists():
         print("Maintenance compose.yml not found; nothing to stop.")
         return
-    run(["docker", "compose", "down"], cwd=dst)
+    run(["docker", "compose", "down"], cwd=dst, env=addon_env())
 
 
 def destroy_maintenance(_: Optional[str] = None) -> None:
@@ -498,7 +582,7 @@ def destroy_maintenance(_: Optional[str] = None) -> None:
     if not dst.exists():
         print("Maintenance directory missing; nothing to destroy.")
         return
-    run(["docker", "compose", "down", "-v"], cwd=dst)
+    run(["docker", "compose", "down", "-v"], cwd=dst, env=addon_env())
     shutil.rmtree(dst)
     print("Maintenance add-on removed.")
 
@@ -806,6 +890,59 @@ SERVICE_ACTIONS = {
 ORDER = ["caddy", "core", "authentik", "admin"]
 
 
+def wait_for_ready(
+    target: str,
+    *,
+    attempts: int = 30,
+    interval: int = 5,
+    timeout: int = 10,
+    insecure: bool = False,
+) -> None:
+    if CTX is None:
+        raise RuntimeError("Context not initialised")
+
+    if target == "all":
+        for name in ("core", "authentik", "admin"):
+            wait_for_ready(
+                name,
+                attempts=attempts,
+                interval=interval,
+                timeout=timeout,
+                insecure=insecure,
+            )
+        return
+
+    if target == "core":
+        run_healthcheck()
+        return
+
+    if target == "authentik":
+        url = f"http://{CTX.auth_host}:9000/-/health/ready/"
+        wait_for_http_service(
+            "Authentik",
+            url,
+            attempts=attempts,
+            interval=interval,
+            timeout=timeout,
+            insecure=insecure,
+        )
+        return
+
+    if target == "admin":
+        url = f"https://{CTX.admin_host}"
+        wait_for_http_service(
+            "Admin panel",
+            url,
+            attempts=attempts,
+            interval=interval,
+            timeout=timeout,
+            insecure=insecure,
+        )
+        return
+
+    raise SystemExit(f"ERROR: Unknown readiness target '{target}'")
+
+
 def run_action(action: str, target: str, domain: Optional[str], *, assume_yes: bool = False) -> None:
     if target == "all":
         for service in ORDER:
@@ -843,6 +980,36 @@ def build_parser() -> argparse.ArgumentParser:
     restore_parser.add_argument("--from-file", help="Restore from local archive")
     restore_parser.add_argument("backup", nargs="?", help="Backup name from S3 (use 'latest')")
 
+    wait_parser = subparsers.add_parser("wait-for-ready", help="Block until a service is healthy")
+    wait_parser.add_argument(
+        "target",
+        choices=["core", "authentik", "admin", "all"],
+        help="Service to wait on",
+    )
+    wait_parser.add_argument(
+        "--attempts",
+        type=int,
+        default=30,
+        help="Number of attempts before failing",
+    )
+    wait_parser.add_argument(
+        "--interval",
+        type=int,
+        default=5,
+        help="Seconds to wait between attempts",
+    )
+    wait_parser.add_argument(
+        "--timeout",
+        type=int,
+        default=10,
+        help="Per-request timeout in seconds",
+    )
+    wait_parser.add_argument(
+        "--insecure",
+        action="store_true",
+        help="Skip TLS verification (useful for internal/self-signed CAs)",
+    )
+
     return parser
 
 
@@ -862,6 +1029,14 @@ def main() -> None:
         backup(args.env, args.local_only)
     elif args.command == "restore":
         restore(args.env, getattr(args, "from_file", None), getattr(args, "backup", None))
+    elif args.command == "wait-for-ready":
+        wait_for_ready(
+            args.target,
+            attempts=args.attempts,
+            interval=args.interval,
+            timeout=args.timeout,
+            insecure=args.insecure,
+        )
 
 
 if __name__ == "__main__":

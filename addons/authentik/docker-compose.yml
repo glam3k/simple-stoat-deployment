@@ -5,6 +5,13 @@ services:
     restart: unless-stopped
     volumes:
       - redis-data:/data
+    deploy:
+      resources:
+        limits:
+          cpus: ${AUTHENTIK_REDIS_CPUS:-0.5}
+          memory: ${AUTHENTIK_REDIS_MEMORY:-256m}
+        reservations:
+          memory: ${AUTHENTIK_REDIS_MEMORY_RESERVATION:-128m}
     networks:
       - authentik
 
@@ -25,6 +32,13 @@ services:
       start_period: 20s
     volumes:
       - postgres-data:/var/lib/postgresql/data
+    deploy:
+      resources:
+        limits:
+          cpus: ${AUTHENTIK_POSTGRES_CPUS:-1}
+          memory: ${AUTHENTIK_POSTGRES_MEMORY:-1g}
+        reservations:
+          memory: ${AUTHENTIK_POSTGRES_MEMORY_RESERVATION:-512m}
     networks:
       - authentik
 

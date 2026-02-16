@@ -50,12 +50,12 @@ add-on cannot steal the entire VPS:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AUTHENTIK_POSTGRES_CPUS` | `1` | CPU limit for the Postgres container |
-| `AUTHENTIK_POSTGRES_MEMORY` | `1g` | Memory limit for Postgres |
-| `AUTHENTIK_POSTGRES_MEMORY_RESERVATION` | `512m` | Guaranteed memory for Postgres |
-| `AUTHENTIK_REDIS_CPUS` | `0.5` | CPU limit for Redis |
-| `AUTHENTIK_REDIS_MEMORY` | `256m` | Memory limit for Redis |
-| `AUTHENTIK_REDIS_MEMORY_RESERVATION` | `128m` | Guaranteed memory for Redis |
+| `AUTHENTIK_POSTGRES_CPUS` | `0.3` | CPU limit for the Postgres container |
+| `AUTHENTIK_POSTGRES_MEMORY` | `384m` | Memory limit for Postgres |
+| `AUTHENTIK_POSTGRES_MEMORY_RESERVATION` | `256m` | Guaranteed memory for Postgres |
+| `AUTHENTIK_REDIS_CPUS` | `0.1` | CPU limit for Redis |
+| `AUTHENTIK_REDIS_MEMORY` | `128m` | Memory limit for Redis |
+| `AUTHENTIK_REDIS_MEMORY_RESERVATION` | `64m` | Guaranteed memory for Redis |
 
 Set these variables in `/opt/stoat/.env` to match your VPS sizing before running
 `bin/stoatctl deploy authentik`. `stoatctl` forwards the root `.env` values to

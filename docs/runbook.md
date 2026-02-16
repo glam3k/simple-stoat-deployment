@@ -106,13 +106,13 @@ capacity:
 
 | Service | CPU var (default) | Memory limit var (default) |
 |---------|-------------------|---------------------------|
-| MongoDB | `STOAT_DB_CPUS=1.5` | `STOAT_DB_MEMORY=2g` |
-| KeyDB | `STOAT_REDIS_CPUS=0.5` | `STOAT_REDIS_MEMORY=512m` |
-| RabbitMQ | `STOAT_RABBIT_CPUS=0.5` | `STOAT_RABBIT_MEMORY=1g` |
-| MinIO | `STOAT_MINIO_CPUS=0.5` | `STOAT_MINIO_MEMORY=1g` |
-| API | `STOAT_API_CPUS=1` | `STOAT_API_MEMORY=1g` |
-| Events | `STOAT_EVENTS_CPUS=1` | `STOAT_EVENTS_MEMORY=1g` |
-| Web | `STOAT_WEB_CPUS=0.5` | `STOAT_WEB_MEMORY=512m` |
+| MongoDB | `STOAT_DB_CPUS=0.8` | `STOAT_DB_MEMORY=1g` |
+| KeyDB | `STOAT_REDIS_CPUS=0.2` | `STOAT_REDIS_MEMORY=256m` |
+| RabbitMQ | `STOAT_RABBIT_CPUS=0.2` | `STOAT_RABBIT_MEMORY=256m` |
+| MinIO | `STOAT_MINIO_CPUS=0.2` | `STOAT_MINIO_MEMORY=256m` |
+| API | `STOAT_API_CPUS=0.3` | `STOAT_API_MEMORY=512m` |
+| Events | `STOAT_EVENTS_CPUS=0.3` | `STOAT_EVENTS_MEMORY=384m` |
+| Web | `STOAT_WEB_CPUS=0.2` | `STOAT_WEB_MEMORY=256m` |
 
 Each service also has a `_MEMORY_RESERVATION` knob (see `.env.example`). Because
 `stoatctl` always runs `docker compose` with the root `.env`, these values apply

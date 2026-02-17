@@ -15,7 +15,7 @@ scrape_configs:
           - localhost
         labels:
           job: docker
-          host: {{ env "HOSTNAME" | default "stoat" }}
+          host: ${PROMTAIL_HOSTNAME:-stoat}
           __path__: /var/lib/docker/containers/*/*-json.log
     pipeline_stages:
       - docker: {}

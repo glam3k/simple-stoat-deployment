@@ -1,6 +1,6 @@
 services:
   admin-panel:
-    image: ghcr.io/glam3k/simple-stoat-admin:latest
+    image: ghcr.io/glam3k/simple-stoat-deployment/simple-stoat-admin:latest
     restart: unless-stopped
     env_file:
       - .env.local

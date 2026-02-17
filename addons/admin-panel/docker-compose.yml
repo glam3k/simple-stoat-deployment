@@ -1,8 +1,6 @@
 services:
   admin-panel:
-    build:
-      context: .
-    image: stoatctl/admin-panel:latest
+    image: ghcr.io/glam3k/simple-stoat-admin:latest
     restart: unless-stopped
     env_file:
       - .env.local

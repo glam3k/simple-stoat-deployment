@@ -530,7 +530,7 @@ def deploy_admin_panel() -> None:
     generate_build_env(env_local, dst / ".env.build")
 
     ensure_network()
-    run(["docker", "compose", "-f", "docker-compose.yml", "build"], cwd=dst, env=addon_env())
+    run(["docker", "compose", "-f", "docker-compose.yml", "pull"], cwd=dst, env=addon_env())
     run(["docker", "compose", "-f", "docker-compose.yml", "up", "-d"], cwd=dst, env=addon_env())
     write_caddy_fragment("admin-panel", CTX.admin_host, "admin-panel:3000")
 

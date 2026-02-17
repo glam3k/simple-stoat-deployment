@@ -25,11 +25,11 @@ fi
 
 # Parse args
 DEPLOY_USER="${DEPLOY_USER:-deploy}"
-ALLOW_PASSWORD=true
+DISABLE_PASSWORD=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --user) DEPLOY_USER="$2"; shift 2 ;;
-        --disable-password) ALLOW_PASSWORD=false; shift ;;
+        --disable-password) DISABLE_PASSWORD=true; shift ;;
         *) shift ;;
     esac
 done
@@ -83,7 +83,7 @@ echo ""
 echo "## 2/9 Hardening SSH..."
 SSHD_CONFIG="/etc/ssh/sshd_config"
 
-if [[ "$ALLOW_PASSWORD" == false ]]; then
+if [[ "$DISABLE_PASSWORD" == true ]]; then
     # Disable password authentication
     sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' "${SSHD_CONFIG}"
     sed -i 's/^#\?ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' "${SSHD_CONFIG}"
@@ -91,16 +91,12 @@ if [[ "$ALLOW_PASSWORD" == false ]]; then
     # Disable root login
     sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' "${SSHD_CONFIG}"
     echo "  SSH hardened: password auth disabled, root login disabled."
-else
-    sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' "${SSHD_CONFIG}"
-    sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' "${SSHD_CONFIG}"
-    sed -i 's/^#\?ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' "${SSHD_CONFIG}"
-    echo "  WARNING: Password login for root/deploy left ENABLED at your request."
-    echo "           Ensure strong passwords and consider limiting SSH by IP."
-fi
 
-# Restart SSH
-systemctl restart ssh || systemctl restart sshd
+    # Restart SSH to apply changes
+    systemctl restart ssh || systemctl restart sshd
+else
+    echo "  Skipping SSH config changes (password/root login left as-is)."
+fi
 echo ""
 
 # -------------------------------------------------------------------

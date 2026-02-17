@@ -1,7 +1,7 @@
 {
     email ${ADMIN_EMAIL}
 acme_ca https://acme.zerossl.com/v2/DV90
-acme_eab kid "${ZEROSSL_KID:?set ZEROSSL_KID}" hmac "${ZEROSSL_HMAC:?set ZEROSSL_HMAC}"
+acme_eab ${ZEROSSL_KID:?set ZEROSSL_KID} ${ZEROSSL_HMAC:?set ZEROSSL_HMAC}
 }
 
 ${STOAT_HOSTNAME}

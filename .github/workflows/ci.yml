@@ -141,6 +141,7 @@ jobs:
 
       - name: Deploy admin panel
         run: |
+          echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
           STOAT_DIR="$STOAT_DIR" bin/stoatctl deploy admin
       - name: Dump Caddyfile after admin deploy
         run: |

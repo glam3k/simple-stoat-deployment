@@ -530,6 +530,19 @@ def deploy_admin_panel() -> None:
     generate_build_env(env_local, dst / ".env.build")
 
     ensure_network()
+    ghcr_token = CTX.env.get("GHCR_TOKEN", "").strip()
+    ghcr_user = CTX.env.get("GHCR_USER", CTX.user)
+    if ghcr_token:
+        proc = subprocess.run(
+            ["docker", "login", "ghcr.io", "-u", ghcr_user, "--password-stdin"],
+            input=f"{ghcr_token}\n",
+            text=True,
+            capture_output=True,
+        )
+        if proc.returncode != 0:
+            print(proc.stdout)
+            print(proc.stderr)
+            raise SystemExit("ERROR: Failed to log in to ghcr.io")
     run(["docker", "compose", "-f", "docker-compose.yml", "pull"], cwd=dst, env=addon_env())
     run(["docker", "compose", "-f", "docker-compose.yml", "up", "-d"], cwd=dst, env=addon_env())
     write_caddy_fragment("admin-panel", CTX.admin_host, "admin-panel:3000")

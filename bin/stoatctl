@@ -585,6 +585,17 @@ def ensure_observability_data_dirs() -> None:
     for key, default in defaults.items():
         path = env_path(key, default)
         ensure_dir(path)
+    chowns = [
+        (env_path("OBS_GRAFANA_DATA_DIR", CTX.stoat_dir / "data" / "grafana"), 472, 472),
+        (env_path("OBS_LOKI_DATA_DIR", CTX.stoat_dir / "data" / "loki"), 10001, 10001),
+        (env_path("OBS_PROM_DATA_DIR", CTX.stoat_dir / "data" / "prometheus"), 65534, 65534),
+    ]
+    for path, uid, gid in chowns:
+        if path.exists():
+            try:
+                shutil.chown(path, user=uid, group=gid)
+            except PermissionError:
+                run(["sudo", "chown", f"{uid}:{gid}", str(path)])
 
 
 def deploy_observability() -> None:
